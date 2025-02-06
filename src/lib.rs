@@ -524,7 +524,9 @@ impl GbsBuildOptions {
         }
 
         if let Some(define) = &self.define {
-            for (key, value) in define {
+            let mut define_vec: Vec<_> = define.iter().collect();
+            define_vec.sort_by_key(|&(key, _)| key);
+            for (key, value) in define_vec {
                 args.push("--define".to_string());
                 args.push(format!("{} {}", key, value));
             }
@@ -1322,9 +1324,9 @@ mod tests {
             options.to_args(),
             vec![
                 "--define".to_string(),
-                "FOO bar".to_string(),
-                "--define".to_string(),
                 "BAZ qux".to_string(),
+                "--define".to_string(),
+                "FOO bar".to_string(),
             ]
         );
     }
