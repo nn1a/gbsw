@@ -71,6 +71,12 @@ pub fn sync_repos(
     options: SyncOptions,
     target_dir: &str,
 ) -> Result<(), Box<dyn Error>> {
+    debug!("sync_repos called with:");
+    debug!("  manifest_path: {}", manifest_path);
+    debug!("  project_list: {:#?}", project_list);
+    debug!("  target_dir: {}", target_dir);
+    debug!("  options: {:?}", options);
+
     let manifest = load_and_merge_manifests(manifest_path, None)?;
 
     let projects_to_sync: Vec<_> = match project_list {
@@ -80,13 +86,20 @@ pub fn sync_repos(
             .into_iter()
             .filter(|p| list.contains(&p.name.as_str()))
             .collect(),
-        None => manifest.projects.clone(),
+        None => manifest.projects.clone(), // Sync all projects if project_list is None
     };
+    debug!("Projects to sync: {:#?}", projects_to_sync);
 
     let target_path = Path::new(target_dir);
 
+    // Create the target directory if it does not exist
+    if !target_path.exists() {
+        fs::create_dir_all(target_path)?;
+    }
+
     // Determine the number of jobs to use
     let jobs = determine_jobs(&manifest, &options);
+    debug!("Number of jobs: {}", jobs);
 
     let errors = Arc::new(Mutex::new(Vec::new()));
     let pool = ThreadPool::new(jobs);
@@ -396,8 +409,9 @@ fn process_project(
     manifest: &Manifest,
     target_path: &Path,
     options: &SyncOptions,
-    jobs: usize,
 ) -> Result<(), Box<dyn Error>> {
+    debug!("Processing project: {:?}", project.name);
+
     let project_path_str = project.path.clone().unwrap_or_else(|| project.name.clone());
     let project_path = target_path.join(&project_path_str);
 
@@ -407,12 +421,20 @@ fn process_project(
         .clone()
         .or_else(|| manifest.default.as_ref().and_then(|d| d.remote.clone()))
         .unwrap_or_else(|| "origin".to_string());
+    debug!("Searching for remote: {}", remote_name);
+
     let remote = manifest
         .remotes
         .iter()
         .find(|r| r.name == remote_name)
-        .ok_or_else(|| format!("Remote '{}' not found in manifest", remote_name))?;
+        .ok_or_else(|| {
+            let error_message = format!("Remote '{}' not found in manifest", remote_name);
+            error!("{}", error_message);
+            error_message
+        })?;
     let repo_url = format!("{}/{}.git", remote.fetch, project.name);
+
+    debug!("Repo URL: {}", repo_url);
 
     // Determine the revision to use
     let revision = project
@@ -427,13 +449,18 @@ fn process_project(
             }
         })?;
 
+    debug!("Revision: {}", revision);
+
     if project_path.exists() {
+        debug!("Project path exists, fetching and rebasing...");
         fetch_and_rebase(&project_path, &revision, options)?;
     } else {
-        clone_repository(&project_path, &repo_url, &revision, jobs)?;
+        debug!("Project path does not exist, cloning repository...");
+        clone_repository(&project_path, &repo_url, &revision)?;
     }
 
     if options.detach {
+        debug!("Detaching to revision: {}", revision);
         checkout_revision(&project_path, &revision)?;
     }
 
@@ -445,28 +472,32 @@ fn fetch_and_rebase(
     revision: &str,
     options: &SyncOptions,
 ) -> Result<(), Box<dyn Error>> {
-    // Fetch the latest changes
-    run_git_command(
-        project_path,
-        &[
-            "fetch",
-            if options.current_branch_only {
-                "--no-tags --prune origin"
-            } else {
-                "origin"
-            },
-            revision,
-        ],
-    )?;
+    debug!("Fetching and rebasing project at: {}", project_path.display());
+    debug!("Revision: {}", revision);
 
-    // Rebase the current branch
-    if !options.detach {
-        let rebase_revision = if is_commit_hash(revision) {
-            revision.to_string()
+    // Fetch the latest changes with depth 1
+    let fetch_args = vec![
+        "fetch",
+        "--depth", "1",
+        if options.current_branch_only {
+            "--no-tags --prune origin"
         } else {
-            format!("origin/{}", revision)
-        };
-        run_git_command(project_path, &["rebase", &rebase_revision])?;
+            "origin"
+        },
+        revision,
+    ];
+
+    debug!("Running git fetch with args: {:?}", fetch_args);
+    if let Err(e) = run_git_command(project_path, &fetch_args) {
+        error!("Failed to fetch: {}", e);
+        return Err(e);
+    }
+
+    // Reset the repository to the fetched revision
+    debug!("Resetting repository to fetched revision");
+    if let Err(e) = run_git_command(project_path, &["reset", "--hard", "FETCH_HEAD"]) {
+        error!("Failed to reset repository: {}", e);
+        return Err(e);
     }
 
     Ok(())
@@ -476,18 +507,52 @@ fn clone_repository(
     project_path: &Path,
     repo_url: &str,
     revision: &str,
-    jobs: usize,
 ) -> Result<(), Box<dyn Error>> {
-    run_git_command(
-        Path::new(""),
-        &[
-            "clone",
-            repo_url,
-            project_path.to_str().unwrap(),
-            &format!("-j{}", jobs),
-        ],
-    )?;
-    checkout_revision(project_path, revision)
+    debug!("Cloning repository from: {}", repo_url);
+    debug!("Target path: {}", project_path.display());
+    debug!("Revision: {}", revision);
+
+    // Create the target directory if it does not exist
+    if !project_path.exists() {
+        debug!("Creating target directory: {}", project_path.display());
+        if let Err(e) = fs::create_dir_all(project_path) {
+            error!("Failed to create target directory: {}", e);
+            return Err(e.into());
+        }
+    }
+
+    // Initialize a new git repository
+    debug!("Initializing new git repository at: {}", project_path.display());
+    if let Err(e) = run_git_command(project_path, &["init"]) {
+        error!("Failed to initialize git repository: {}", e);
+        return Err(e);
+    }
+
+    // Add the remote origin
+    debug!("Adding remote origin: {}", repo_url);
+    if let Err(e) = run_git_command(project_path, &["remote", "add", "origin", repo_url]) {
+        error!("Failed to add remote origin: {}", e);
+        return Err(e);
+    }
+
+    // Fetch the specific revision with depth 1
+    debug!("Fetching revision with depth 1: {}", revision);
+    if let Err(e) = run_git_command(
+        project_path,
+        &["fetch", "--depth", "1", "origin", revision],
+    ) {
+        error!("Failed to fetch revision: {}", e);
+        return Err(e);
+    }
+
+    // Checkout the fetched revision
+    debug!("Checking out revision: {}", revision);
+    if let Err(e) = run_git_command(project_path, &["checkout", "FETCH_HEAD"]) {
+        error!("Failed to checkout revision: {}", e);
+        return Err(e);
+    }
+
+    Ok(())
 }
 
 fn checkout_revision(project_path: &Path, revision: &str) -> Result<(), Box<dyn Error>> {
@@ -498,10 +563,6 @@ fn run_git_command(project_path: &Path, args: &[&str]) -> Result<(), Box<dyn Err
     DefaultGitCommandRunner
         .run_git_command(project_path, args)
         .map(|_| ())
-}
-
-fn is_commit_hash(revision: &str) -> bool {
-    revision.len() == 40 && revision.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn handle_errors(
