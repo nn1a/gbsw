@@ -111,7 +111,7 @@ pub fn sync_repos(
         let options = options.clone();
 
         pool.execute(move || {
-            if let Err(e) = process_project(&project, &manifest, &target_path, &options, jobs) {
+            if let Err(e) = process_project(&project, &manifest, &target_path, &options) {
                 let mut errors = errors.lock().unwrap();
                 errors.push((project.name.clone(), e.to_string()));
             }
@@ -472,13 +472,17 @@ fn fetch_and_rebase(
     revision: &str,
     options: &SyncOptions,
 ) -> Result<(), Box<dyn Error>> {
-    debug!("Fetching and rebasing project at: {}", project_path.display());
+    debug!(
+        "Fetching and rebasing project at: {}",
+        project_path.display()
+    );
     debug!("Revision: {}", revision);
 
     // Fetch the latest changes with depth 1
     let fetch_args = vec![
         "fetch",
-        "--depth", "1",
+        "--depth",
+        "1",
         if options.current_branch_only {
             "--no-tags --prune origin"
         } else {
@@ -522,7 +526,10 @@ fn clone_repository(
     }
 
     // Initialize a new git repository
-    debug!("Initializing new git repository at: {}", project_path.display());
+    debug!(
+        "Initializing new git repository at: {}",
+        project_path.display()
+    );
     if let Err(e) = run_git_command(project_path, &["init"]) {
         error!("Failed to initialize git repository: {}", e);
         return Err(e);
@@ -537,10 +544,7 @@ fn clone_repository(
 
     // Fetch the specific revision with depth 1
     debug!("Fetching revision with depth 1: {}", revision);
-    if let Err(e) = run_git_command(
-        project_path,
-        &["fetch", "--depth", "1", "origin", revision],
-    ) {
+    if let Err(e) = run_git_command(project_path, &["fetch", "--depth", "1", "origin", revision]) {
         error!("Failed to fetch revision: {}", e);
         return Err(e);
     }

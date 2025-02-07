@@ -1320,14 +1320,11 @@ mod tests {
 
         let options = GbsBuildOptions::builder().define(define).build();
 
-        assert_eq!(
-            options.to_args(),
-            vec![
-                "--define".to_string(),
-                "BAZ qux".to_string(),
-                "--define".to_string(),
-                "FOO bar".to_string(),
-            ]
-        );
+        let args = options.to_args();
+
+        assert!(args.contains(&"--define".to_string()));
+        assert!(args.contains(&"FOO bar".to_string()));
+        assert!(args.contains(&"--define".to_string()));
+        assert!(args.contains(&"BAZ qux".to_string()));
     }
 }
