@@ -1,4 +1,4 @@
-use crate::{Manifest, Project};
+use crate::{CopyFile, LinkFile, Manifest, Project};
 use log::{debug, error};
 use std::error::Error;
 use std::fs;
@@ -133,7 +133,12 @@ pub fn sync_repos(
     handle_errors(errors, options.keep)?;
 
     // Handle copyfiles and linkfiles
-    handle_copyfiles_and_linkfiles(&manifest, target_path, &options)?;
+    handle_copyfiles_and_linkfiles(
+        &manifest.copyfiles,
+        &manifest.linkfiles,
+        target_path,
+        &options,
+    )?;
 
     Ok(())
 }
@@ -142,110 +147,80 @@ pub fn sync_repos(
 ///
 /// # Arguments
 ///
-/// * `manifest` - The merged manifest containing the copyfile and linkfile elements.
+/// * `copyfiles` - A slice of copyfile elements.
+/// * `linkfiles` - A slice of linkfile elements.
 /// * `target_path` - The path to the target directory where repositories will be cloned.
 /// * `options` - A struct containing options for the sync operation.
 fn handle_copyfiles_and_linkfiles(
-    manifest: &Manifest,
+    copyfiles: &[CopyFile],
+    linkfiles: &[LinkFile],
     target_path: &Path,
     options: &SyncOptions,
 ) -> Result<(), Box<dyn Error>> {
-    for copyfile in &manifest.copyfiles {
-        let src = target_path.join(&copyfile.src);
-        let dest = target_path.join(&copyfile.dest);
+    for copyfile in copyfiles {
+        let src = target_path.join(&copyfile.src).canonicalize()?;
+        let dest = target_path.join(&copyfile.dest).canonicalize()?;
 
-        // Validate that src and dest are files and not directories or symlinks
-        if !src.is_file() {
-            error!("Source '{}' is not a file", src.display());
-            if !options.keep {
-                return Err("Sync failed due to errors".into());
-            }
-            continue;
-        }
-
-        if dest.exists() && !dest.is_file() {
-            error!("Destination '{}' is not a file", dest.display());
-            if !options.keep {
-                return Err("Sync failed due to errors".into());
-            }
-            continue;
-        }
-
-        // Create parent directories of dest if missing
-        if let Some(parent) = dest.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                error!(
-                    "Failed to create parent directories for '{}': {}",
-                    dest.display(),
-                    e
-                );
-                if !options.keep {
-                    return Err("Sync failed due to errors".into());
-                }
-                continue;
-            }
-        }
-
-        if let Err(e) = std::fs::copy(&src, &dest) {
-            error!(
-                "Failed to copy file from '{}' to '{}': {}",
-                src.display(),
-                dest.display(),
-                e
-            );
+        if let Err(e) = validate_and_process_paths(&src, &dest, target_path, false) {
+            error!("Failed to process copyfile: {}", e);
             if !options.keep {
                 return Err("Sync failed due to errors".into());
             }
         }
     }
 
-    for linkfile in &manifest.linkfiles {
-        let src = target_path.join(&linkfile.src);
-        let dest = target_path.join(&linkfile.dest);
+    for linkfile in linkfiles {
+        let src = target_path.join(&linkfile.src).canonicalize()?;
+        let dest = target_path.join(&linkfile.dest).canonicalize()?;
 
-        // Validate that src exists and dest is not a directory
-        if !src.exists() {
-            error!("Source '{}' does not exist", src.display());
-            if !options.keep {
-                return Err("Sync failed due to errors".into());
-            }
-            continue;
-        }
-
-        if dest.exists() && dest.is_dir() {
-            error!("Destination '{}' is a directory", dest.display());
-            if !options.keep {
-                return Err("Sync failed due to errors".into());
-            }
-            continue;
-        }
-
-        // Create parent directories of dest if missing
-        if let Some(parent) = dest.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                error!(
-                    "Failed to create parent directories for '{}': {}",
-                    dest.display(),
-                    e
-                );
-                if !options.keep {
-                    return Err("Sync failed due to errors".into());
-                }
-                continue;
-            }
-        }
-
-        if let Err(e) = std::os::unix::fs::symlink(&src, &dest) {
-            error!(
-                "Failed to create symlink from '{}' to '{}': {}",
-                src.display(),
-                dest.display(),
-                e
-            );
+        if let Err(e) = validate_and_process_paths(&src, &dest, target_path, true) {
+            error!("Failed to process linkfile: {}", e);
             if !options.keep {
                 return Err("Sync failed due to errors".into());
             }
         }
+    }
+
+    Ok(())
+}
+
+fn validate_and_process_paths(
+    src: &Path,
+    dest: &Path,
+    target_path: &Path,
+    is_symlink: bool,
+) -> Result<(), Box<dyn Error>> {
+    // Ensure src and dest do not go above target_path
+    if !src.starts_with(target_path) || !dest.starts_with(target_path) {
+        return Err("Source or destination path is outside the target directory".into());
+    }
+
+    // Validate that src exists and dest is not a directory
+    if !src.exists() {
+        return Err(format!("Source '{}' does not exist", src.display()).into());
+    }
+
+    if dest.exists() && dest.is_dir() {
+        return Err(format!("Destination '{}' is a directory", dest.display()).into());
+    }
+
+    // Create parent directories of dest if missing
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    if is_symlink {
+        std::os::unix::fs::symlink(src, dest)?;
+    } else {
+        if !src.is_file() {
+            return Err(format!("Source '{}' is not a file", src.display()).into());
+        }
+
+        if dest.exists() && !dest.is_file() {
+            return Err(format!("Destination '{}' is not a file", dest.display()).into());
+        }
+
+        std::fs::copy(src, dest)?;
     }
 
     Ok(())
@@ -480,7 +455,7 @@ fn process_project(
 fn fetch_and_rebase(
     project_path: &Path,
     revision: &str,
-    options: &SyncOptions,
+    _options: &SyncOptions,
 ) -> Result<(), Box<dyn Error>> {
     debug!(
         "Fetching and rebasing project at: {}",
@@ -489,17 +464,7 @@ fn fetch_and_rebase(
     debug!("Revision: {}", revision);
 
     // Fetch the latest changes with depth 1
-    let fetch_args = vec![
-        "fetch",
-        "--depth",
-        "1",
-        if options.current_branch_only {
-            "--no-tags --prune origin"
-        } else {
-            "origin"
-        },
-        revision,
-    ];
+    let fetch_args = vec!["fetch", "origin", "--prune", "--depth", "1", revision];
 
     debug!("Running git fetch with args: {:?}", fetch_args);
     if let Err(e) = run_git_command(project_path, &fetch_args) {
