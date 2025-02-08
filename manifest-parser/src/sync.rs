@@ -400,6 +400,7 @@ fn process_project(
     let remote_name = project
         .remote
         .clone()
+        .or_else(|| manifest.default.as_ref().and_then(|d| d.remote.clone()))
         .unwrap_or_else(|| "origin".to_string());
     let remote = manifest
         .remotes
