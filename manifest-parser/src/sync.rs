@@ -1,11 +1,11 @@
 use crate::{Manifest, Project};
 use log::{debug, error};
-use rayon::prelude::*;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex};
+use threadpool::ThreadPool;
 
 /// Trait for running git commands, used for mocking in tests.
 pub trait GitCommandRunner {
@@ -89,25 +89,30 @@ pub fn sync_repos(
     let jobs = determine_jobs(&manifest, &options);
 
     let errors = Arc::new(Mutex::new(Vec::new()));
+    let pool = ThreadPool::new(jobs);
 
-    // Use rayon to process projects in parallel
-    let result: Result<(), ()> = projects_to_sync.par_iter().try_for_each(|project| {
-        if let Err(e) = process_project(project, &manifest, target_path, &options, jobs) {
-            let mut errors = errors.lock().unwrap();
-            errors.push((project.name.clone(), e.to_string()));
-            if !options.keep {
-                return Err(());
+    for project in projects_to_sync {
+        let errors = Arc::clone(&errors);
+        let manifest = manifest.clone();
+        let target_path = target_path.to_path_buf();
+        let options = options.clone();
+
+        pool.execute(move || {
+            if let Err(e) = process_project(&project, &manifest, &target_path, &options, jobs) {
+                let mut errors = errors.lock().unwrap();
+                errors.push((project.name.clone(), e.to_string()));
             }
-        }
-        Ok(())
-    });
+        });
+    }
+
+    pool.join();
 
     handle_errors(errors, options.keep)?;
 
     // Handle copyfiles and linkfiles
     handle_copyfiles_and_linkfiles(&manifest, target_path, &options)?;
 
-    result.map_err(|_| "Sync failed due to errors".into())
+    Ok(())
 }
 
 /// Handles the copying and linking of files as specified in the manifest.
@@ -515,6 +520,7 @@ fn handle_errors(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
 pub struct SyncOptions {
     pub current_branch_only: bool,
     pub detach: bool,

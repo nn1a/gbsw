@@ -27,7 +27,7 @@ pub mod sync;
 /// Manifests are inherently version controlled, since they are kept
 /// within a Git repository. Updates to manifests are automatically
 /// obtained by clients during `repo sync`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Manifest {
     /// Arbitrary text that is displayed to users whenever `repo sync` finishes.
     pub notice: Option<String>,
@@ -61,7 +61,7 @@ pub struct Manifest {
     pub annotations: Vec<Annotation>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Remote {
     pub name: String,
     pub alias: Option<String>,
@@ -71,7 +71,7 @@ pub struct Remote {
     pub revision: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Default {
     pub remote: Option<String>,
     pub revision: Option<String>,
@@ -83,12 +83,12 @@ pub struct Default {
     pub sync_tags: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ManifestServer {
     pub url: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Submanifest {
     pub name: String,
     pub remote: Option<String>,
@@ -129,7 +129,7 @@ pub struct Project {
     pub force_path: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExtendProject {
     pub name: String,
     pub path: Option<String>,
@@ -142,7 +142,7 @@ pub struct ExtendProject {
     pub base_rev: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RemoveProject {
     pub name: Option<String>,
     pub path: Option<String>,
@@ -150,20 +150,20 @@ pub struct RemoveProject {
     pub base_rev: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RepoHooks {
     pub in_project: String,
     pub enabled_list: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Superproject {
     pub name: String,
     pub remote: Option<String>,
     pub revision: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ContactInfo {
     pub bugurl: String,
 }
@@ -175,19 +175,19 @@ pub struct Include {
     pub revision: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CopyFile {
     pub src: String,
     pub dest: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LinkFile {
     pub src: String,
     pub dest: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Annotation {
     pub name: String,
     pub value: String,
@@ -681,4 +681,15 @@ impl Manifest {
         self.annotations.push(annotation);
         Ok(())
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncOptions {
+    pub current_branch_only: bool,
+    pub detach: bool,
+    pub force: bool,
+    pub jobs: Option<usize>,
+    pub quiet: bool,
+    pub smart_sync: bool,
+    pub keep: bool,
 }
