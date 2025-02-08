@@ -27,6 +27,7 @@ pub mod sync;
 /// Manifests are inherently version controlled, since they are kept
 /// within a Git repository. Updates to manifests are automatically
 /// obtained by clients during `repo sync`.
+///
 #[derive(Debug, Clone)]
 pub struct Manifest {
     /// Arbitrary text that is displayed to users whenever `repo sync` finishes.
@@ -53,12 +54,6 @@ pub struct Manifest {
     pub contactinfo: Option<ContactInfo>,
     /// This element provides the capability of including another manifest file.
     pub includes: Vec<Include>,
-    /// One or more copyfile elements may be specified.
-    pub copyfiles: Vec<CopyFile>,
-    /// One or more linkfile elements may be specified.
-    pub linkfiles: Vec<LinkFile>,
-    /// One or more annotation elements may be specified.
-    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +122,9 @@ pub struct Project {
     pub upstream: Option<String>,
     pub clone_depth: Option<String>,
     pub force_path: Option<String>,
+    pub copyfiles: Vec<CopyFile>,
+    pub linkfiles: Vec<LinkFile>,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone)]
@@ -229,9 +227,6 @@ impl Manifest {
             superproject: None,
             contactinfo: None,
             includes: Vec::new(),
-            copyfiles: Vec::new(),
-            linkfiles: Vec::new(),
-            annotations: Vec::new(),
         };
 
         manifest.parse_file(file_path)?;
@@ -262,9 +257,13 @@ impl Manifest {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                Ok(Event::Start(ref e)) => {
                     let element = e.to_owned();
-                    self.parse_element(&element, &mut reader, &mut buf, file_path)?;
+                    self.parse_element(&element, &mut reader, &mut buf, file_path, false)?;
+                }
+                Ok(Event::Empty(ref e)) => {
+                    let element = e.to_owned();
+                    self.parse_element(&element, &mut reader, &mut buf, file_path, true)?;
                 }
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(Box::new(e)),
@@ -282,6 +281,7 @@ impl Manifest {
         reader: &mut Reader<BufReader<File>>,
         buf: &mut Vec<u8>,
         file_path: &str,
+        closed: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         match e.name() {
             QName(b"notice") => {
@@ -294,15 +294,12 @@ impl Manifest {
             QName(b"manifest-server") => self.parse_manifest_server(e)?,
             QName(b"submanifest") => self.parse_submanifest(e)?,
             QName(b"remove-project") => self.parse_remove_project(e)?,
-            QName(b"project") => self.parse_project(e)?,
+            QName(b"project") => self.parse_project(e, reader, closed)?,
             QName(b"extend-project") => self.parse_extend_project(e)?,
             QName(b"repo-hooks") => self.parse_repo_hooks(e)?,
             QName(b"superproject") => self.parse_superproject(e)?,
             QName(b"contactinfo") => self.parse_contactinfo(e)?,
             QName(b"include") => self.parse_include(e, file_path)?,
-            QName(b"copyfile") => self.parse_copyfile(e)?,
-            QName(b"linkfile") => self.parse_linkfile(e)?,
-            QName(b"annotation") => self.parse_annotation(e)?,
             _ => (),
         }
         Ok(())
@@ -335,6 +332,7 @@ impl Manifest {
         if remote.name.is_empty() || remote.fetch.is_empty() {
             return Err("Missing required attributes in remote element".into());
         }
+
         self.remotes.push(remote);
         Ok(())
     }
@@ -450,6 +448,8 @@ impl Manifest {
     fn parse_project(
         &mut self,
         e: &quick_xml::events::BytesStart,
+        reader: &mut Reader<BufReader<File>>,
+        closed: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut project = Project {
             name: String::new(),
@@ -464,6 +464,9 @@ impl Manifest {
             upstream: None,
             clone_depth: None,
             force_path: None,
+            copyfiles: Vec::new(),
+            linkfiles: Vec::new(),
+            annotations: Vec::new(),
         };
         for attr in e.attributes() {
             let attr = attr?;
@@ -486,6 +489,88 @@ impl Manifest {
         if project.name.is_empty() {
             return Err("Missing required attribute 'name' in project element".into());
         }
+
+        if !closed {
+            let mut buf = Vec::new();
+
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                        // let element = e.to_owned();
+                        match e.name() {
+                            QName(b"copyfile") => {
+                                let mut copyfile = CopyFile {
+                                    src: String::new(),
+                                    dest: String::new(),
+                                };
+                                for attr in e.attributes() {
+                                    let attr = attr?;
+                                    match attr.key.as_ref() {
+                                        b"src" => copyfile.src = attr.unescape_value()?.to_string(),
+                                        b"dest" => {
+                                            copyfile.dest = attr.unescape_value()?.to_string()
+                                        }
+                                        _ => (),
+                                    }
+                                }
+
+                                project.copyfiles.push(copyfile);
+                            }
+                            QName(b"linkfile") => {
+                                let mut linkfile = LinkFile {
+                                    src: String::new(),
+                                    dest: String::new(),
+                                };
+                                for attr in e.attributes() {
+                                    let attr = attr?;
+                                    match attr.key.as_ref() {
+                                        b"src" => linkfile.src = attr.unescape_value()?.to_string(),
+                                        b"dest" => {
+                                            linkfile.dest = attr.unescape_value()?.to_string()
+                                        }
+                                        _ => (),
+                                    }
+                                }
+
+                                project.linkfiles.push(linkfile);
+                            }
+                            QName(b"annotation") => {
+                                let mut annotation = Annotation {
+                                    name: String::new(),
+                                    value: String::new(),
+                                    keep: true,
+                                };
+                                for attr in e.attributes() {
+                                    let attr = attr?;
+                                    match attr.key.as_ref() {
+                                        b"name" => {
+                                            annotation.name = attr.unescape_value()?.to_string()
+                                        }
+                                        b"value" => {
+                                            annotation.value = attr.unescape_value()?.to_string()
+                                        }
+                                        b"keep" => {
+                                            annotation.keep =
+                                                attr.unescape_value()?.to_string().to_lowercase()
+                                                    == "true"
+                                        }
+                                        _ => (),
+                                    }
+                                }
+                                project.annotations.push(annotation);
+                            }
+                            _ => (),
+                        }
+                    }
+                    Ok(Event::End(ref e)) if e.name() == QName(b"project") => break,
+                    Ok(Event::Eof) => break,
+                    Err(e) => return Err(Box::new(e)),
+                    _ => (),
+                }
+                buf.clear();
+            }
+        }
+
         self.projects.push(project);
         Ok(())
     }
@@ -615,70 +700,6 @@ impl Manifest {
                 return Err(e);
             }
         }
-        Ok(())
-    }
-
-    fn parse_copyfile(
-        &mut self,
-        e: &quick_xml::events::BytesStart,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut copyfile = CopyFile {
-            src: String::new(),
-            dest: String::new(),
-        };
-        for attr in e.attributes() {
-            let attr = attr?;
-            match attr.key.as_ref() {
-                b"src" => copyfile.src = attr.unescape_value()?.to_string(),
-                b"dest" => copyfile.dest = attr.unescape_value()?.to_string(),
-                _ => (),
-            }
-        }
-        self.copyfiles.push(copyfile);
-        Ok(())
-    }
-
-    fn parse_linkfile(
-        &mut self,
-        e: &quick_xml::events::BytesStart,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut linkfile = LinkFile {
-            src: String::new(),
-            dest: String::new(),
-        };
-        for attr in e.attributes() {
-            let attr = attr?;
-            match attr.key.as_ref() {
-                b"src" => linkfile.src = attr.unescape_value()?.to_string(),
-                b"dest" => linkfile.dest = attr.unescape_value()?.to_string(),
-                _ => (),
-            }
-        }
-        self.linkfiles.push(linkfile);
-        Ok(())
-    }
-
-    fn parse_annotation(
-        &mut self,
-        e: &quick_xml::events::BytesStart,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut annotation = Annotation {
-            name: String::new(),
-            value: String::new(),
-            keep: true,
-        };
-        for attr in e.attributes() {
-            let attr = attr?;
-            match attr.key.as_ref() {
-                b"name" => annotation.name = attr.unescape_value()?.to_string(),
-                b"value" => annotation.value = attr.unescape_value()?.to_string(),
-                b"keep" => {
-                    annotation.keep = attr.unescape_value()?.to_string().to_lowercase() == "true"
-                }
-                _ => (),
-            }
-        }
-        self.annotations.push(annotation);
         Ok(())
     }
 }

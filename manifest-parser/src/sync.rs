@@ -1,4 +1,4 @@
-use crate::{CopyFile, LinkFile, Manifest, Project};
+use crate::{Manifest, Project};
 use log::{debug, error};
 use std::error::Error;
 use std::fs;
@@ -106,7 +106,7 @@ pub fn sync_repos(
     let pool = ThreadPool::new(jobs);
     let stop_flag = Arc::new(AtomicBool::new(false));
 
-    for project in projects_to_sync {
+    for project in projects_to_sync.clone() {
         let stop_flag = Arc::clone(&stop_flag);
         if !options.keep && stop_flag.load(Ordering::Relaxed) {
             break;
@@ -132,13 +132,27 @@ pub fn sync_repos(
 
     handle_errors(errors, options.keep)?;
 
-    // Handle copyfiles and linkfiles
-    handle_copyfiles_and_linkfiles(
-        &manifest.copyfiles,
-        &manifest.linkfiles,
-        target_path,
-        &options,
-    )?;
+    for project in projects_to_sync {
+        debug!("Processing project: {:?}", project.name);
+        let project_path_str = project.path.clone().unwrap_or_else(|| project.name.clone());
+        let project_path = target_path.join(&project_path_str);
+        for copyfile in project.copyfiles {
+            handle_copyfiles_and_linkfiles(
+                &project_path.join(&copyfile.src),
+                &target_path.join(&copyfile.dest),
+                target_path,
+                false,
+            )?;
+        }
+        for linkfile in project.linkfiles {
+            handle_copyfiles_and_linkfiles(
+                &project_path.join(&linkfile.src),
+                &target_path.join(&linkfile.dest),
+                target_path,
+                true,
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -147,44 +161,11 @@ pub fn sync_repos(
 ///
 /// # Arguments
 ///
-/// * `copyfiles` - A slice of copyfile elements.
-/// * `linkfiles` - A slice of linkfile elements.
-/// * `target_path` - The path to the target directory where repositories will be cloned.
-/// * `options` - A struct containing options for the sync operation.
+/// * `src` - absolute path to the source file path, under git repository (project) directory.
+/// * `dest` - absolute path to the dest file path., under projects root directory.
+/// * `target_path` - absolute path to the target directory. projects root directory.
+/// * `is_symlink` - boolean flag to indicate if the file should be symlinked.
 fn handle_copyfiles_and_linkfiles(
-    copyfiles: &[CopyFile],
-    linkfiles: &[LinkFile],
-    target_path: &Path,
-    options: &SyncOptions,
-) -> Result<(), Box<dyn Error>> {
-    for copyfile in copyfiles {
-        let src = target_path.join(&copyfile.src).canonicalize()?;
-        let dest = target_path.join(&copyfile.dest).canonicalize()?;
-
-        if let Err(e) = validate_and_process_paths(&src, &dest, target_path, false) {
-            error!("Failed to process copyfile: {}", e);
-            if !options.keep {
-                return Err("Sync failed due to errors".into());
-            }
-        }
-    }
-
-    for linkfile in linkfiles {
-        let src = target_path.join(&linkfile.src).canonicalize()?;
-        let dest = target_path.join(&linkfile.dest).canonicalize()?;
-
-        if let Err(e) = validate_and_process_paths(&src, &dest, target_path, true) {
-            error!("Failed to process linkfile: {}", e);
-            if !options.keep {
-                return Err("Sync failed due to errors".into());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_and_process_paths(
     src: &Path,
     dest: &Path,
     target_path: &Path,
@@ -371,9 +352,6 @@ fn merge_manifests(base: &mut Manifest, local: Manifest) {
     base.superproject = local.superproject.or(base.superproject.take());
     base.contactinfo = local.contactinfo.or(base.contactinfo.take());
     base.includes.extend(local.includes);
-    base.copyfiles.extend(local.copyfiles);
-    base.linkfiles.extend(local.linkfiles);
-    base.annotations.extend(local.annotations);
 }
 
 fn determine_jobs(manifest: &Manifest, options: &SyncOptions) -> usize {

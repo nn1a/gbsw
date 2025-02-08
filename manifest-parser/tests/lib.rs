@@ -22,6 +22,13 @@ fn test_parse_valid_manifest() {
         <manifest-server url="https://example.com/manifest"/>
         <submanifest name="sub1" remote="origin" project="subproject"/>
         <project name="project1" path="path/to/project1" remote="origin" revision="main"/>
+        <project name="project2" path="path/to/project2" remote="origin" revision="main"/>
+        <project name="project3" path="path/to/project3" remote="origin" revision="main">
+            <copyfile src="build/makefile" dest="Makfile"/>
+            <copyfile src="build/test" dest="test"/>
+            <linkfile src="hello" dest="world"/>
+        </project>
+        <project name="project4" path="path/to/project3" remote="origin" revision="main"/>
         <extend-project name="project1" path="path/to/project1" revision="develop"/>
         <remove-project name="project2"/>
         <repo-hooks in-project="hooks" enabled-list="pre-upload"/>
@@ -35,13 +42,17 @@ fn test_parse_valid_manifest() {
 
     writeln!(included_file, r#"
     <manifest>
-        <project name="included_project" path="path/to/included_project" remote="origin" revision="main"/>
+        <project name="included_project" path="path/to/included_project" remote="origin" revision="main">
+        <annotation name="key1" value="value1"/>
+        <annotation name="key2" value="value2" keep="false"/>
+        <annotation name="key3" value="value3" keep="true"/>
+        </project>
     </manifest>
     "#).unwrap();
 
     let manifest =
         Manifest::from_file(file_path.to_str().unwrap(), Some("origin"), Some("main")).unwrap();
-    println!("{:?}", manifest);
+    println!("{:#?}", manifest);
 
     assert_eq!(manifest.notice, Some("This is a notice".to_string()));
     assert_eq!(manifest.remotes.len(), 1);
@@ -55,7 +66,19 @@ fn test_parse_valid_manifest() {
         "https://example.com/manifest"
     );
     assert_eq!(manifest.submanifests.len(), 1);
-    assert_eq!(manifest.projects.len(), 2); // Includes the project from the included manifest
+    assert_eq!(manifest.projects.len(), 5);
+    assert_eq!(manifest.projects[2].copyfiles.len(), 2);
+    assert_eq!(manifest.projects[2].copyfiles[0].src, "build/makefile");
+    assert_eq!(manifest.projects[2].copyfiles[1].dest, "test");
+    assert_eq!(manifest.projects[2].linkfiles.len(), 1);
+    assert_eq!(manifest.projects[2].linkfiles[0].src, "hello");
+    assert_eq!(manifest.projects[2].linkfiles[0].dest, "world");
+    assert_eq!(manifest.projects[4].annotations.len(), 3); // Includes the annotation from the included project
+    assert_eq!(manifest.projects[4].annotations[0].keep, true);
+    assert_eq!(manifest.projects[4].annotations[0].name, "key1");
+    assert_eq!(manifest.projects[4].annotations[0].value, "value1");
+    assert_eq!(manifest.projects[4].annotations[1].keep, false);
+    assert_eq!(manifest.projects[4].annotations[2].keep, true);
     assert_eq!(manifest.extend_projects.len(), 1);
     assert_eq!(manifest.remove_projects.len(), 1);
     assert_eq!(manifest.repo_hooks.as_ref().unwrap().in_project, "hooks");
