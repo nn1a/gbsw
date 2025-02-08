@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use threadpool::ThreadPool;
 
@@ -103,17 +104,26 @@ pub fn sync_repos(
 
     let errors = Arc::new(Mutex::new(Vec::new()));
     let pool = ThreadPool::new(jobs);
+    let stop_flag = Arc::new(AtomicBool::new(false));
 
     for project in projects_to_sync {
+        let stop_flag = Arc::clone(&stop_flag);
+        if !options.keep && stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
         let errors = Arc::clone(&errors);
         let manifest = manifest.clone();
         let target_path = target_path.to_path_buf();
         let options = options.clone();
 
         pool.execute(move || {
+            if !options.keep && stop_flag.load(Ordering::Relaxed) {
+                return;
+            }
             if let Err(e) = process_project(&project, &manifest, &target_path, &options) {
                 let mut errors = errors.lock().unwrap();
                 errors.push((project.name.clone(), e.to_string()));
+                stop_flag.store(true, Ordering::Relaxed);
             }
         });
     }
